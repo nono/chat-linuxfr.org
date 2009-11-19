@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+import collections
 import daemon
+import hashlib
 import logging
 import os.path
 import sys
@@ -28,64 +30,57 @@ class Application(tornado.web.Application):
 
 
 class MessageMixin(object):
-    waiters = []
+    waiters = collections.defaultdict(list)
     cache = []
-    cache_size = 200
+    cache_size = 20
 
-    def wait_for_messages(self, callback, cursor=None):
+    def wait_for_messages(self, chan, callback, cursor):
         mm = MessageMixin
         if cursor:
             index = 0
             for i in xrange(len(mm.cache)):
                 index = len(mm.cache) - i - 1
                 if mm.cache[index]["id"] == cursor: break
-            recent = mm.cache[index + 1:]
+            recent = [msg for msg in mm.cache[index + 1:] if msg["chan"] == chan]
             if recent:
                 callback(recent)
                 return
-        mm.waiters.append(callback)
+        mm.waiters[chan].append(callback)
 
-    def new_messages(self, messages):
+    def new_message(self, chan, message):
         mm = MessageMixin
-        logging.info("Sending new message to %r listeners", len(mm.waiters))
-        for callback in mm.waiters:
+        for callback in mm.waiters[chan]:
             try:
-                callback(messages)
+                callback([message])
             except:
                 logging.error("Error in waiter callback", exc_info=True)
-        mm.waiters = []
-        mm.cache.extend(messages)
+        mm.waiters[chan] = []
+        mm.cache.append(message)
         if len(mm.cache) > self.cache_size:
             mm.cache = mm.cache[-self.cache_size:]
 
 
-
-# TODO Protect this handler with a secret
 class NewMessageHandler(tornado.web.RequestHandler, MessageMixin):
     def post(self):
+        chan = hashlib.sha1(self.get_argument("chan")).hexdigest()
         message = {
-                "id":   str(uuid.uuid4()),
-                "chan": self.get_argument("chan"),
-                "type": self.get_argument("type"),
-                "user": self.get_argument("user"),
-                "msg":  self.get_argument("msg"),
+                "id":  self.get_argument("id"),
+                "msg": self.get_argument("msg")
         }
-        self.new_messages([message])
+        self.new_message(chan, message)
         self.write("OK")
 
 
 class ChanHandler(tornado.web.RequestHandler, MessageMixin):
     @tornado.web.asynchronous    
     def post(self, chan):
-        cursor = self.get_argument("cursor", None)
-        self.wait_for_messages(self.async_callback(self.on_new_messages),
-                               cursor=cursor)
+        self.wait_for_messages(chan,
+                               self.async_callback(self.on_new_messages),
+                               self.get_argument("cursor", None))
 
     def on_new_messages(self, messages):
-        # Closed client connection
-        if self.request.connection.stream.closed():
-            return
-        self.finish(dict(messages=messages))
+        if not self.request.connection.stream.closed():
+            self.finish(dict(messages=messages))
 
 
 if __name__ == "__main__":
