@@ -62,12 +62,13 @@ class MessageMixin(object):
 
 class NewMessageHandler(tornado.web.RequestHandler, MessageMixin):
     def post(self):
-        chan = hashlib.sha1(self.get_argument("chan")).hexdigest()
+        chan = self.get_argument("chan")
+        sha1 = hashlib.sha1(chan).hexdigest()
         message = {
                 "id":  self.get_argument("id"),
                 "msg": self.get_argument("msg")
         }
-        self.new_message(chan, message)
+        self.new_message(sha1, message)
         self.write("OK")
 
 
